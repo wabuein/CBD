@@ -144,23 +144,7 @@ pip install ultralytics opencv-python torch torchvision torchaudio
 
 ## Running the System
 
-### Detection + Visualization Mode
-
-```bash
-python main.py --source 0
-```
-
-The display window shows:
-
-* Object name
-* Dominant color
-* Detection confidence
-
-Press **Q** or **ESC** to exit.
-
----
-
-### Frame-Matched Benchmark Mode (Recommended)
+### Frame-Matched Benchmark 
 
 ```bash
 python main.py --source 0 

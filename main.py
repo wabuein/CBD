@@ -76,11 +76,11 @@ def main():
 
     while True:
         idle = np.zeros((300, 1200, 3), dtype=np.uint8)
+        
         _overlay_text(idle, [
             "READY.",
             f"Press R to run: {frames} frames | fixed {TRIALS} trials (~{frames_per_trial} frames each).",
             f"Source={args.source} | backend={args.backend} | mjpg={args.mjpg} | no_draw={args.no_draw}",
-            "Per-trial output includes: performance, lighting, detections, top objects/colors, mean confidence (proxy accuracy).",
             "Press Q or ESC to quit."
         ])
 
