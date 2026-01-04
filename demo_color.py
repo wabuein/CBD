@@ -8,11 +8,11 @@ from ultralytics import YOLO
 # ============================================================
 # FIXED EXPERIMENT DESIGN
 # ============================================================
-TRIALS = 12  # Always 12 trials (e.g., 60s -> 12 x 5s)
+TRIALS = 12  # Always 12 trials
 
 
 # ============================================================
-# COLOUR DETECTION (your original logic kept; only comments added)
+# COLOUR DETECTION (your original logic kept; comments added)
 # ============================================================
 def colour_name_from_bgr(bgr_crop: np.ndarray) -> str:
     """Estimate a simple colour name from a cropped BGR region."""
@@ -23,21 +23,19 @@ def colour_name_from_bgr(bgr_crop: np.ndarray) -> str:
     if h_img < 4 or w_img < 4:
         return "unknown"
 
-    # Use the center region to avoid edge/background contamination
+    # Focus on centre region to avoid background/edges
     py = int(0.2 * h_img)
     px = int(0.2 * w_img)
     cx = bgr_crop[py:h_img - py, px:w_img - px]
     if cx.size == 0:
         cx = bgr_crop
 
-    # Reduce sensor noise
     cx = cv2.medianBlur(cx, 3)
 
-    # Convert to HSV for more stable colour naming
     hsv = cv2.cvtColor(cx, cv2.COLOR_BGR2HSV)
     H, S, V = cv2.split(hsv)
 
-    # Low-saturation logic for grayscale/black/white
+    # Grayscale cases
     s_mean = float(np.mean(S))
     v_mean = float(np.mean(V))
     if s_mean < 20:
@@ -47,7 +45,6 @@ def colour_name_from_bgr(bgr_crop: np.ndarray) -> str:
             return "black"
         return "gray"
 
-    # Mask out pixels that are too dark/bright to be reliable
     mask = (S > 30) & (V > 40) & (V < 230)
     if mask.sum() < 50:
         if v_mean > 200:
@@ -56,16 +53,13 @@ def colour_name_from_bgr(bgr_crop: np.ndarray) -> str:
             return "black"
         return "gray"
 
-    # Weighted hue histogram (weight = saturation * brightness)
     Hm = H[mask].astype(np.int32)
     Sm = S[mask].astype(np.float32) / 255.0
     Vm = V[mask].astype(np.float32) / 255.0
-    weights = Sm * Vm
+    weights = Sm * Vm  # emphasize saturated + bright pixels
 
     hist = np.bincount(Hm, weights=weights, minlength=180).astype(np.float32)
     peak = int(np.argmax(hist))
-
-    # Special-case red wrap-around (0° and 180° are both red-ish)
     red_wrap = hist[0:10].sum() + hist[170:180].sum()
 
     def hue_to_name(h):
@@ -93,7 +87,7 @@ def colour_name_from_bgr(bgr_crop: np.ndarray) -> str:
 
 
 # ============================================================
-# LIGHT / DARKNESS METRIC (NEW)
+# LIGHT / DARKNESS METRIC
 # ============================================================
 def compute_light_level(frame_bgr: np.ndarray):
     """
@@ -113,7 +107,7 @@ def compute_light_level(frame_bgr: np.ndarray):
 
 
 # ============================================================
-# RUNNING STATS (NEW) - online mean/min/max without storing all frames
+# RUNNING STATS (online mean/min/max)
 # ============================================================
 class RunningStats:
     """Tracks mean/min/max online (streaming)."""
@@ -139,7 +133,7 @@ class RunningStats:
 
 
 # ============================================================
-# CAMERA OPENING (CHANGED) - better for external webcams + Pi
+# CAMERA OPENING (better for external webcams + Pi)
 # ============================================================
 def open_capture(src_str: str, preferred_backend: str = "auto"):
     """
@@ -147,7 +141,6 @@ def open_capture(src_str: str, preferred_backend: str = "auto"):
       --source 0 / 1 / 2  (camera indices incl. external USB webcams)
       --source /path/video.mp4
       --source rtsp://...
-    Backend selection helps external webcams behave properly across OS.
     """
     source = int(src_str) if src_str.isdigit() else src_str
     system = platform.system()
@@ -179,7 +172,6 @@ def open_capture(src_str: str, preferred_backend: str = "auto"):
 
         cap = cv2.VideoCapture(source, backend)
     else:
-        # File/URL streams
         if pb == "gstreamer":
             cap = cv2.VideoCapture(source, cv2.CAP_GSTREAMER)
         else:
@@ -192,11 +184,7 @@ def open_capture(src_str: str, preferred_backend: str = "auto"):
 
 
 def apply_camera_settings(cap: cv2.VideoCapture, width: int, height: int, fps: int, mjpg: bool):
-    """
-    Camera settings help benchmark consistency:
-    - Force MJPG for many USB webcams (often improves FPS on Pi)
-    - Set resolution + target FPS (if supported by the webcam/driver)
-    """
+    """Apply requested webcam settings (if supported by camera/driver)."""
     if mjpg:
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
     if width > 0:
@@ -208,7 +196,7 @@ def apply_camera_settings(cap: cv2.VideoCapture, width: int, height: int, fps: i
 
 
 # ============================================================
-# DRAW HELPERS (same as you had; added tiny helper for metrics text)
+# DRAW HELPERS
 # ============================================================
 def draw_labelled_box(img, x1, y1, x2, y2, text):
     cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
@@ -224,23 +212,32 @@ def overlay_text(img, lines, x=10, y=30, line_h=24):
 
 
 # ============================================================
-# BENCHMARK RUN (NEW)
+# FRAME-MATCHED BENCHMARK RUN (NEW DESIGN)
 # ============================================================
-def run_benchmark(cap, model, imgsz, conf, duration_s, draw_detections=True):
+def run_benchmark_frame_matched(
+    cap,
+    model,
+    imgsz,
+    conf,
+    total_frames: int,
+    draw_detections: bool = True,
+):
     """
-    Runs benchmark for duration_s total, split into TRIALS fixed time windows.
-    Measures:
-      - Light level (brightness % + raw means)
-      - Capture time (ms)
-      - Inference time (ms)
-      - Post time (ms)
-      - End-to-end time (ms)
-      - FPS
-    Prints per-trial averages and overall averages, then returns a final frame.
+    Frame-matched benchmark:
+      - processes exactly total_frames frames (same N on laptop and Pi)
+      - splits the run into TRIALS fixed frame windows
+      - measures capture/infer/post/e2e timings + light level per frame
+      - prints per-trial averages and overall averages
+      - returns the last annotated frame (for freeze screen)
     """
-    # Fixed trial design (12 always)
-    num_trials = TRIALS
-    trial_s = duration_s / num_trials
+    if total_frames <= 0:
+        raise ValueError("total_frames must be > 0")
+
+    # Fixed trial design
+    frames_per_trial = total_frames // TRIALS
+    if frames_per_trial < 1:
+        # If user sets too few frames, force at least 1 frame per trial (some trials may be empty)
+        frames_per_trial = 1
 
     # Overall stats
     st_fps = RunningStats()
@@ -252,7 +249,7 @@ def run_benchmark(cap, model, imgsz, conf, duration_s, draw_detections=True):
     st_vmean = RunningStats()
     st_luma = RunningStats()
 
-    # Trial stats (reset each trial)
+    # Trial stats
     tr_fps = RunningStats()
     tr_cap = RunningStats()
     tr_inf = RunningStats()
@@ -262,37 +259,32 @@ def run_benchmark(cap, model, imgsz, conf, duration_s, draw_detections=True):
 
     trial_results = []
     trial_index = 1
+    frame_index = 0
 
-    bench_start = time.perf_counter()
-    next_trial_cut = bench_start + trial_s
+    # Time the whole run too (useful to compute achieved throughput)
+    run_start = time.perf_counter()
 
     last_annotated = None
 
-    while True:
-        now = time.perf_counter()
-        elapsed = now - bench_start
-        if elapsed >= duration_s:
-            break
-
-        # Use perf_counter for accurate benchmarking timings
+    while frame_index < total_frames:
         t0 = time.perf_counter()
 
-        # --- Capture timing ---
+        # Capture timing
         tcap0 = time.perf_counter()
         ok, frame = cap.read()
         tcap1 = time.perf_counter()
         if not ok or frame is None:
             break
 
-        # --- Light metric ---
+        # Light metric
         brightness_pct, v_mean, luma_mean = compute_light_level(frame)
 
-        # --- Inference timing ---
+        # Inference timing
         tinf0 = time.perf_counter()
         results = model.predict(source=frame, imgsz=imgsz, conf=conf, verbose=False)
         tinf1 = time.perf_counter()
 
-        # --- Post timing (drawing + colour) ---
+        # Post/draw timing
         annotated = frame.copy()
         if draw_detections:
             for r in results:
@@ -304,7 +296,6 @@ def run_benchmark(cap, model, imgsz, conf, duration_s, draw_detections=True):
                     x1, y1 = max(0, x1), max(0, y1)
                     x2, y2 = min(w - 1, x2), min(h - 1, y2)
 
-                    # Keep crop safe
                     crop = frame[y1:y2, x1:x2]
                     colour = colour_name_from_bgr(crop)
 
@@ -314,7 +305,7 @@ def run_benchmark(cap, model, imgsz, conf, duration_s, draw_detections=True):
         tpost1 = time.perf_counter()
         t1 = tpost1
 
-        # Compute metrics in ms
+        # Compute metrics
         cap_ms = (tcap1 - tcap0) * 1000.0
         inf_ms = (tinf1 - tinf0) * 1000.0
         post_ms = (tpost1 - tinf1) * 1000.0
@@ -339,23 +330,29 @@ def run_benchmark(cap, model, imgsz, conf, duration_s, draw_detections=True):
         tr_e2e.add(e2e_ms)
         tr_light.add(brightness_pct)
 
+        frame_index += 1
+
+        # Trial number based on frame index
+        # Trial boundaries at: frames_per_trial, 2*frames_per_trial, ...
+        current_trial = min(TRIALS, (frame_index - 1) // frames_per_trial + 1)
+
         # Live overlay during benchmarking
         overlay_text(annotated, [
-            f"Benchmark: {elapsed:5.1f}/{duration_s:.0f}s | Trial {trial_index}/{num_trials} ({trial_s:.2f}s each)",
+            f"Frame-matched benchmark: frame {frame_index}/{total_frames} | Trial {current_trial}/{TRIALS}",
             f"Light: {brightness_pct:5.1f}% (V={v_mean:5.1f}/255, Luma={luma_mean:5.1f}/255)",
             f"FPS: {fps:5.1f} | cap {cap_ms:5.1f}ms | inf {inf_ms:5.1f}ms | post {post_ms:5.1f}ms | e2e {e2e_ms:5.1f}ms",
         ])
 
         last_annotated = annotated
 
-        # Show frame while running
         cv2.imshow("YOLO Benchmark (press Q to abort run)", annotated)
         key = cv2.waitKey(1) & 0xFF
         if key in (27, ord("q")):
             break
 
-        # Trial boundary
-        if time.perf_counter() >= next_trial_cut and trial_index <= num_trials:
+        # If we just finished a trial boundary (and it's not the very last frame edge case)
+        # Example: if frames_per_trial=50, boundaries are 50,100,150...
+        if frame_index % frames_per_trial == 0 and trial_index <= TRIALS:
             trial_results.append({
                 "trial": trial_index,
                 "frames": tr_fps.n,
@@ -376,13 +373,17 @@ def run_benchmark(cap, model, imgsz, conf, duration_s, draw_detections=True):
             tr_light = RunningStats()
 
             trial_index += 1
-            next_trial_cut += trial_s
+
+    run_end = time.perf_counter()
+    total_time_s = run_end - run_start
 
     # Print summary
-    print("\n" + "=" * 78)
-    print(f"BENCHMARK RESULTS | duration={duration_s:.1f}s | trials={TRIALS} | trial_len={duration_s/TRIALS:.2f}s")
+    print("\n" + "=" * 84)
+    print(f"FRAME-MATCHED BENCHMARK RESULTS | frames={frame_index}/{total_frames} | trials={TRIALS} | frames/trial≈{frames_per_trial}")
     print(f"Device: {platform.system()} ({platform.machine()}) | imgsz={imgsz} | conf={conf}")
-    print("-" * 78)
+    print(f"Total wall time: {total_time_s:.2f}s | Achieved throughput: {frame_index / max(1e-9, total_time_s):.2f} FPS")
+    print("-" * 84)
+
     for tr in trial_results:
         print(
             f"Trial {tr['trial']:02d} | frames={tr['frames']:4d} | "
@@ -391,7 +392,7 @@ def run_benchmark(cap, model, imgsz, conf, duration_s, draw_detections=True):
             f"light {tr['light_pct_avg']:.2f}%"
         )
 
-    print("-" * 78)
+    print("-" * 84)
     print("OVERALL AVERAGES (all frames in run)")
     print(f"FPS:        {st_fps.summary('')}")
     print(f"Capture ms: {st_cap.summary(' ms')}")
@@ -401,24 +402,24 @@ def run_benchmark(cap, model, imgsz, conf, duration_s, draw_detections=True):
     print(f"Light %:    {st_light.summary('%')}")
     print(f"HSV V mean: {st_vmean.summary('')}")
     print(f"Luma mean:  {st_luma.summary('')}")
-    print("=" * 78 + "\n")
+    print("=" * 84 + "\n")
 
     return last_annotated
 
 
 # ============================================================
-# MAIN LOOP (CHANGED) - idle screen, press R to run, auto-stop, press R again
+# MAIN LOOP - idle screen, press R to run, auto-stop after N frames
 # ============================================================
 def main():
-    ap = argparse.ArgumentParser(description="YOLO + colour + fixed-12-trial benchmark (auto-stop + rerun)")
+    ap = argparse.ArgumentParser(description="YOLO + colour + frame-matched benchmark (fixed 12 trials)")
     ap.add_argument("--model", default="yolo11n.pt", help="YOLO weights path (e.g., yolo11n.pt).")
     ap.add_argument("--source", default="0", help="Camera index ('0','1',...) or video/stream path.")
     ap.add_argument("--backend", default="auto", help="auto|any|dshow|msmf|v4l2|avfoundation|gstreamer")
     ap.add_argument("--imgsz", type=int, default=512, help="Inference image size (lower -> faster).")
     ap.add_argument("--conf", type=float, default=0.25, help="Confidence threshold.")
 
-    # Benchmark duration only (trials fixed at 12)
-    ap.add_argument("--duration", type=float, default=60.0, help="Benchmark duration in seconds (default 60).")
+    # Frame-matched run length (same N frames on laptop and Pi)
+    ap.add_argument("--frames", type=int, default=600, help="Total frames per benchmark run (default 600).")
 
     # Camera settings
     ap.add_argument("--width", type=int, default=1280)
@@ -431,17 +432,17 @@ def main():
 
     args = ap.parse_args()
 
-    if args.duration <= 0:
-        raise ValueError("duration must be > 0")
+    if args.frames <= 0:
+        raise ValueError("--frames must be > 0")
 
-    trial_len = args.duration / TRIALS
-    print(f"Configured experimental design: duration={args.duration:.1f}s split into {TRIALS} trials "
-          f"({trial_len:.2f}s each).")
+    frames_per_trial = max(1, args.frames // TRIALS)
+    print(f"Configured experimental design: frame-matched run of {args.frames} frames split into {TRIALS} trials "
+          f"(~{frames_per_trial} frames/trial).")
 
     model = YOLO(args.model)
     cap = open_capture(args.source, args.backend)
 
-    # Apply webcam settings only if source is an integer camera index
+    # Apply webcam settings only if source is camera index
     if args.source.isdigit():
         apply_camera_settings(cap, args.width, args.height, args.cam_fps, args.mjpg)
 
@@ -449,11 +450,10 @@ def main():
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
 
     while True:
-        # Idle screen
-        idle = np.zeros((260, 980, 3), dtype=np.uint8)
+        idle = np.zeros((260, 1020, 3), dtype=np.uint8)
         overlay_text(idle, [
             "READY.",
-            f"Press R to run benchmark: {args.duration:.0f}s total, fixed {TRIALS} trials ({trial_len:.2f}s each).",
+            f"Press R to run: {args.frames} frames total, fixed {TRIALS} trials (~{frames_per_trial} frames each).",
             "Press Q or ESC to quit.",
         ], x=12, y=50, line_h=34)
 
@@ -464,17 +464,15 @@ def main():
             break
 
         if key == ord("r"):
-            # Run benchmark; it will auto-stop at duration
-            last_frame = run_benchmark(
+            last_frame = run_benchmark_frame_matched(
                 cap=cap,
                 model=model,
                 imgsz=args.imgsz,
                 conf=args.conf,
-                duration_s=args.duration,
+                total_frames=args.frames,
                 draw_detections=(not args.no_draw),
             )
 
-            # Freeze last frame and wait for user to rerun or quit
             if last_frame is None:
                 last_frame = idle.copy()
 
