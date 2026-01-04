@@ -1,4 +1,3 @@
-# vision/yolo_runner.py
 from dataclasses import dataclass
 from typing import List
 import numpy as np

@@ -147,7 +147,7 @@ pip install ultralytics opencv-python torch torchvision torchaudio
 ### Detection + Visualization Mode
 
 ```bash
-python main.py --source 0 --imgsz 512
+python main.py --source 0
 ```
 
 The display window shows:
@@ -163,7 +163,7 @@ Press **Q** or **ESC** to exit.
 ### Frame-Matched Benchmark Mode (Recommended)
 
 ```bash
-python main.py --source 0 --frames 600
+python main.py --source 0 
 ```
 
 Benchmark flow:
@@ -180,14 +180,10 @@ Benchmark flow:
 
 ### Optional Flags
 
-* `--no_draw`
-  Disables bounding-box rendering and color estimation (pure inference benchmark)
-
-* `--mjpg`
-  Forces MJPG codec (recommended for USB webcams on Raspberry Pi)
-
-* `--backend v4l2`
-  Recommended capture backend for Linux / Raspberry Pi
+* ``--source (0, 1, 2)``: to access main device cam or external.
+* ``--backend (auto|any|dshow|msmf|v4l2|avfoundation|gstreamer)``: for different devices (windows, mac, rasberry)
+* ``--mjpg``: mainly used for external cam on rasberry pi
+* ``--no_draw``: doesn't draw boxes
 
 ---
 

@@ -1,9 +1,3 @@
-# config/settings.py
-"""
-Central place for default experiment and camera settings.
-You can override these via CLI in main.py, but these are the defaults.
-"""
-
 # Fixed experimental design
 TRIALS = 12
 

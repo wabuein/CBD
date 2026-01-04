@@ -1,4 +1,3 @@
-# benchmark/frame_benchmark.py
 import time
 import platform
 from dataclasses import dataclass

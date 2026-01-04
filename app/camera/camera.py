@@ -1,4 +1,3 @@
-# camera/camera.py
 import platform
 import cv2
 
