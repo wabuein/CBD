@@ -1,6 +1,6 @@
 # YOLO Object and Color Detection
 
-### Final Year Project – Intelligent Vision System
+### Final Year Project – Reconfigurable Conveyer Sorting System with AI-Based Object Classification 
 
 This repository implements a **real-time object and color detection system** using **Ultralytics YOLO** deep-learning models and will be used for the final Reconfigurable Conveyer Sorting System with AI-Based Object Classification (CBD).
 
