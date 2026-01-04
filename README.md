@@ -1,33 +1,66 @@
 # YOLO Object and Color Detection
 
-### Final Year Project – Reconfigurable Conveyer Sorting System with AI-Based Object Classification 
+### Final Year Project – Reconfigurable Conveyor Sorting System with AI-Based Object Classification (CBD)
 
-This repository implements a **real-time object and color detection system** using **Ultralytics YOLO** deep-learning models and will be used for the final Reconfigurable Conveyer Sorting System with AI-Based Object Classification (CBD).
+This repository implements a **real-time object and color detection system** using **Ultralytics YOLO** deep-learning models.
+The system forms the vision and benchmarking core of the **Reconfigurable Conveyor Sorting System with AI-Based Object Classification (CBD)**.
 
-It detects everyday objects and estimates their dominant color using a lightweight HSV-based post-processing pipeline.
+It detects everyday objects, estimates their dominant color using a lightweight HSV-based pipeline, and evaluates real-time performance using a **frame-matched benchmarking methodology** designed for fair comparison between heterogeneous platforms.
 
 The system is designed to run on both:
 
-* a **laptop** (development and benchmarking), and
-* a **Raspberry Pi 5** (low-power deployment),
+* a **laptop** (development, testing, and benchmarking), and
+* a **Raspberry Pi 5** (low-power embedded deployment),
 
-with a strong emphasis on **fair, reproducible performance evaluation**.
+with a strong emphasis on **modularity, reproducibility, and experimental validity**.
 
 ---
 
-## 🎯 Objectives
+## Objectives
 
 * Detect multiple common objects in real time using a pretrained YOLO model.
 * Estimate the dominant color of each detected object using HSV color analysis.
 * Run efficiently on low-power hardware such as the Raspberry Pi 5.
-* Provide a **robust benchmarking framework** to fairly compare laptop vs Raspberry Pi performance.
-* Serve as an extendable base for IoT, robotics, and intelligent automation systems.
+* Provide a **robust, frame-matched benchmarking framework** for fair laptop vs Raspberry Pi comparison.
+* Record **what was detected**, **how confidently**, and **how fast**, per trial.
+* Serve as an extensible base for conveyor sorting, robotics, and intelligent automation systems.
 
 ---
 
-## 🧠 System Overview
+## System Architecture
 
-The system consists of three main stages per frame:
+The project follows a **single-entry-point, modular package-based design**.
+
+```
+CBD/
+├── main.py                  # single entry point
+├── yolo11n.pt
+│
+├── config/                  # experiment & camera defaults
+│   └── settings.py
+│
+├── camera/                  # camera handling & backends
+│   └── camera.py
+│
+├── vision/                  # vision utilities
+│   ├── yolo_runner.py       # YOLO wrapper
+│   └── color_utils.py       # HSV color estimation
+│
+├── benchmark/               # benchmarking engine
+│   └── frame_benchmark.py
+│
+├── utils/                   # statistics & aggregation
+│   └── stats.py
+```
+
+Only **`main.py`** is executed directly.
+All other components are imported as modules, improving maintainability and extensibility.
+
+---
+
+## Per-Frame Processing Pipeline
+
+Each frame is processed in three clearly separated stages:
 
 1. **Frame capture** from a USB or CSI camera
 2. **YOLO inference** using Ultralytics’ `predict()` pipeline
@@ -35,53 +68,65 @@ The system consists of three main stages per frame:
 
    * bounding-box rendering
    * dominant color estimation
-   * metric collection (timing and lighting)
+   * metric and detection aggregation
 
-Each stage is measured independently to understand where performance bottlenecks occur.
+Each stage is timed independently to identify performance bottlenecks.
 
 ---
 
-## 🧪 Benchmarking Methodology (Frame-Matched, Fixed Trials)
+## Benchmarking Methodology
+
+### Frame-Matched, Fixed-Trial Design
 
 To ensure a **fair and scientifically valid comparison** between the laptop and Raspberry Pi, the system uses a **frame-matched benchmark design**.
 
 ### Key design choices
 
 * **Fixed total number of frames per run** (default: 600 frames)
-* **Fixed number of trials: 12**
+* **Fixed number of trials: 12** (non-configurable by design)
 * Frames are split evenly:
 
   * 600 frames → **12 trials × 50 frames per trial**
-* Each frame records:
 
-  * capture time
-  * inference time
-  * post-processing time
-  * end-to-end latency
-  * derived FPS
-  * scene light level (brightness)
+### Why frame-matched?
+
+In time-matched benchmarks, faster devices process more frames, leading to unequal sample sizes and biased averages.
+By fixing the number of frames, both platforms process the **same number of observations**, enabling a clean, per-frame efficiency comparison.
 
 ---
 
-## 🧰 Requirements
+## Recorded Metrics (Per Trial & Overall)
 
-### Hardware
+For **each trial** and for the **entire run**, the system reports:
 
-* Laptop or Desktop (development and benchmarking)
-* Raspberry Pi 5 (4 GB RAM or higher recommended)
-* USB webcam or CSI camera module
+### Performance metrics
 
-### Software
+* Capture time (ms)
+* Inference time (ms)
+* Post-processing time (ms)
+* End-to-end latency (ms)
+* Derived FPS
 
-* **Python 3.11+**
-* **Ultralytics YOLO** (v8 / v10 / v11 compatible)
-* **OpenCV** (camera input and image processing)
-* **PyTorch (CPU)** for laptop inference
-* Optional: NCNN / ONNX export for Raspberry Pi optimisation
+### Environmental metrics
+
+* Scene brightness (%)
+* HSV V-channel mean
+* Grayscale luminance mean
+
+### Detection metrics
+
+* Total detections per trial
+* **Mean confidence** (used as an *accuracy proxy* for live video)
+* Top detected object classes
+* Top detected colors
+* Top object–color pairs
+* Mean confidence per object class
+
+> **Note:** True accuracy (precision / recall / mAP) requires ground-truth labels and is therefore not computed for live camera input. Mean confidence is used as a practical proxy.
 
 ---
 
-## ⚙️ Installation (Laptop Setup)
+## Installation (Laptop Setup)
 
 ```bash
 # 1. Create and activate virtual environment
@@ -97,10 +142,12 @@ pip install ultralytics opencv-python torch torchvision torchaudio
 
 ---
 
-## ▶️ Running the System (Detection Mode)
+## Running the System
+
+### Detection + Visualization Mode
 
 ```bash
-python demo_color.py --model yolo11n.pt --source 0 --imgsz 512
+python main.py --source 0 --imgsz 512
 ```
 
 The display window shows:
@@ -113,53 +160,47 @@ Press **Q** or **ESC** to exit.
 
 ---
 
-## ▶️ Running the Benchmark (Frame-Matched)
+### Frame-Matched Benchmark Mode (Recommended)
 
 ```bash
-python demo_color.py --model yolo11n.pt --source 0 --frames 600
+python main.py --source 0 --frames 600
 ```
 
-During benchmarking:
+Benchmark flow:
 
-* Press **R** to start a benchmark run
-* The system automatically stops after the specified number of frames
-* Per-trial and overall averages are printed to the terminal
+* A **READY** screen appears
+* Press **R** to start the benchmark
+* The system processes exactly 600 frames
+* 12 trials are executed automatically
+* Per-trial and overall summaries are printed to the terminal
 * The final frame freezes on screen
 * Press **R** to run again, **Q** to quit
 
-### Optional flags
+---
 
-* `--no_draw` → disables drawing and color detection (pure inference benchmark)
-* `--mjpg` → forces MJPG codec (recommended for USB webcams on Raspberry Pi)
-* `--backend v4l2` → recommended capture backend on Linux / Raspberry Pi
+### Optional Flags
+
+* `--no_draw`
+  Disables bounding-box rendering and color estimation (pure inference benchmark)
+
+* `--mjpg`
+  Forces MJPG codec (recommended for USB webcams on Raspberry Pi)
+
+* `--backend v4l2`
+  Recommended capture backend for Linux / Raspberry Pi
 
 ---
 
-## 📊 Reported Metrics
+## Applications
 
-Per-trial and overall averages are reported for:
-
-* Capture time (ms)
-* Inference time (ms)
-* Post-processing time (ms)
-* End-to-end latency (ms)
-* Derived FPS
-* Scene brightness (light level)
-
-This allows precise identification of performance bottlenecks between platforms.
-
----
-
-## 🧩 Applications
-
-* Intelligent object sorting systems
+* Reconfigurable conveyor sorting systems
 * Robotics and autonomous platforms
-* Smart home and IoT vision nodes
+* Smart manufacturing and industrial inspection
 * Embedded AI benchmarking and optimisation studies
 
 ---
 
-## 📚 References
+## References
 
 * Ultralytics YOLO Documentation: [https://docs.ultralytics.com](https://docs.ultralytics.com)
 * Objects365 Dataset: [https://www.objects365.org](https://www.objects365.org)
