@@ -7,7 +7,8 @@ import cv2
 import numpy as np
 
 from app.config.settings import TRIALS, WINDOW_RUN_TITLE
-from app.vision.color_utils import colour_name_from_bgr, compute_light_level
+from app.vision.color_utils import colour_name_from_bgr, compute_light_level, white_balance_gray_world
+from app.vision.mask_utils import BackgroundMasker
 from app.utils.stats import RunningStats, DetectionSummary
 from app.vision.yolo_runner import YoloRunner
 
@@ -46,6 +47,36 @@ def _draw_labelled_box(img, x1, y1, x2, y2, text):
     cv2.putText(img, text, (x1 + 3, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2, cv2.LINE_AA)
 
 
+def _clip_box(x1: int, y1: int, x2: int, y2: int, w: int, h: int):
+    x1 = max(0, min(w - 1, x1))
+    y1 = max(0, min(h - 1, y1))
+    x2 = max(0, min(w, x2))
+    y2 = max(0, min(h, y2))
+    return x1, y1, x2, y2
+
+
+def _choose_primary_detection(dets, w: int, h: int):
+    """
+    Conveyor-style: choose a single "primary" object per frame.
+    Largest area wins; tie-break by confidence.
+    """
+    best = None
+    best_area = 0
+    best_conf = -1.0
+
+    for d in dets:
+        x1, y1, x2, y2 = _clip_box(int(d.x1), int(d.y1), int(d.x2), int(d.y2), w, h)
+        if x2 <= x1 or y2 <= y1:
+            continue
+        area = (x2 - x1) * (y2 - y1)
+        if (area > best_area) or (area == best_area and float(d.conf) > best_conf):
+            best = (x1, y1, x2, y2, d)
+            best_area = area
+            best_conf = float(d.conf)
+
+    return best
+
+
 class FrameMatchedBenchmark:
     """
     Frame-matched benchmark:
@@ -54,6 +85,7 @@ class FrameMatchedBenchmark:
       - per frame: capture/infer/post/e2e + light level
       - per trial: object counts, color counts, object-color pairs, mean confidence (proxy accuracy)
     """
+
     def __init__(self, yolo: YoloRunner, imgsz: int, conf_thres: float):
         self.yolo = yolo
         self.imgsz = imgsz
@@ -99,6 +131,16 @@ class FrameMatchedBenchmark:
         run_start = time.perf_counter()
         last_annotated = None
 
+        # ---- Capture background reference once (empty belt recommended) ----
+        masker = BackgroundMasker()
+        ok_ref, ref = cap.read()
+        if not ok_ref or ref is None:
+            return None
+        ref = white_balance_gray_world(ref)
+        masker.set_reference(ref)
+        print("[MASK] Background reference captured. (Ensure belt was empty for best results)")
+
+        # Main loop
         while frame_idx < total_frames:
             t0 = time.perf_counter()
 
@@ -108,6 +150,12 @@ class FrameMatchedBenchmark:
             tcap1 = time.perf_counter()
             if not ok or frame is None:
                 break
+
+            # White balance frame (stabilizes color naming)
+            frame = white_balance_gray_world(frame)
+
+            # Foreground mask (belt/background removal)
+            fg = masker.mask(frame)
 
             # ---- Lighting ----
             light_pct, v_mean, luma_mean = compute_light_level(frame)
@@ -119,28 +167,52 @@ class FrameMatchedBenchmark:
 
             # ---- Post (draw + colour) ----
             annotated = frame.copy()
-            if draw:
-                h, w = frame.shape[:2]
-                for d in dets:
-                    x1, y1 = max(0, d.x1), max(0, d.y1)
-                    x2, y2 = min(w - 1, d.x2), min(h - 1, d.y2)
-                    if x2 <= x1 or y2 <= y1:
-                        continue
+            h, w = frame.shape[:2]
 
-                    crop = frame[y1:y2, x1:x2]
-                    color = colour_name_from_bgr(crop)
+            # Choose a single primary object to log per frame (reduces random COCO junk)
+            primary = _choose_primary_detection(dets, w, h) if dets else None
 
-                    # Record detection stats for this trial + overall
-                    tr_det.add_detection(d.cls_name, color, d.conf)
-                    st_det.add_detection(d.cls_name, color, d.conf)
+            # Fallback: if YOLO found nothing, try using the foreground mask bbox as the "object"
+            fallback_cls = "object"
+            fallback_conf = 0.0
+            if primary is None:
+                bb = masker.largest_component_bbox(fg)
+                if bb is not None:
+                    x1, y1, x2, y2 = _clip_box(bb[0], bb[1], bb[2], bb[3], w, h)
+                    if x2 > x1 and y2 > y1:
+                        primary = (x1, y1, x2, y2, None)
 
-                    label = f"{d.cls_name} | {color} | {d.conf:.2f}"
-                    _draw_labelled_box(annotated, x1, y1, x2, y2, label)
-            else:
-                # Still record object+confidence, but color is not computed
-                for d in dets:
-                    tr_det.add_detection(d.cls_name, "n/a", d.conf)
-                    st_det.add_detection(d.cls_name, "n/a", d.conf)
+            tpost_start = time.perf_counter()
+
+            if primary is not None:
+                x1, y1, x2, y2, d = primary
+                crop = frame[y1:y2, x1:x2]
+                crop_mask = fg[y1:y2, x1:x2]
+
+                if draw:
+                    if d is not None:
+                        color = colour_name_from_bgr(crop, mask=crop_mask)
+                        tr_det.add_detection(d.cls_name, color, d.conf)
+                        st_det.add_detection(d.cls_name, color, d.conf)
+
+                        label = f"{d.cls_name} | {color} | {float(d.conf):.2f}"
+                        _draw_labelled_box(annotated, x1, y1, x2, y2, label)
+                    else:
+                        # fallback object (mask-only)
+                        color = colour_name_from_bgr(crop, mask=crop_mask)
+                        tr_det.add_detection(fallback_cls, color, fallback_conf)
+                        st_det.add_detection(fallback_cls, color, fallback_conf)
+
+                        label = f"{fallback_cls} | {color}"
+                        _draw_labelled_box(annotated, x1, y1, x2, y2, label)
+                else:
+                    # Still record object+confidence, but color is not computed
+                    if d is not None:
+                        tr_det.add_detection(d.cls_name, "n/a", d.conf)
+                        st_det.add_detection(d.cls_name, "n/a", d.conf)
+                    else:
+                        tr_det.add_detection(fallback_cls, "n/a", fallback_conf)
+                        st_det.add_detection(fallback_cls, "n/a", fallback_conf)
 
             tpost1 = time.perf_counter()
             t1 = tpost1
@@ -148,7 +220,7 @@ class FrameMatchedBenchmark:
             # ---- Metrics ----
             cap_ms = (tcap1 - tcap0) * 1000.0
             inf_ms = (tinf1 - tinf0) * 1000.0
-            post_ms = (tpost1 - tinf1) * 1000.0
+            post_ms = (tpost1 - tpost_start) * 1000.0
             e2e_ms = (t1 - t0) * 1000.0
             fps = 1000.0 / max(1e-6, e2e_ms)
 
@@ -168,7 +240,8 @@ class FrameMatchedBenchmark:
                 f"Frame-matched: {frame_idx}/{total_frames} | Trial {current_trial}/{TRIALS} | {frames_per_trial} f/trial",
                 f"Light: {light_pct:5.1f}% (V={v_mean:5.1f}/255, Luma={luma_mean:5.1f}/255)",
                 f"FPS: {fps:5.1f} | cap {cap_ms:5.1f}ms | inf {inf_ms:5.1f}ms | post {post_ms:5.1f}ms | e2e {e2e_ms:5.1f}ms",
-                f"Dets(trial): {tr_det.det_count} | mean conf(proxy acc): {tr_det.det_conf.mean:.3f}",
+                f"Dets(trial): {tr_det.det_count} | mean conf(proxy): {tr_det.det_conf.mean:.3f}",
+                "Press Q to abort.",
             ])
 
             last_annotated = annotated
@@ -233,9 +306,8 @@ class FrameMatchedBenchmark:
             print(f"Trial {tr.trial_idx:02d} | frames={tr.frames:4d} | "
                   f"FPS {tr.fps.mean:.2f} | cap {tr.cap_ms.mean:.2f}ms | inf {tr.inf_ms.mean:.2f}ms | post {tr.post_ms.mean:.2f}ms | e2e {tr.e2e_ms.mean:.2f}ms | "
                   f"light {tr.light_pct.mean:.2f}% | "
-                  f"mean conf(proxy acc) {tr.det.det_conf.mean:.3f} | dets {tr.det.det_count}")
+                  f"mean conf(proxy) {tr.det.det_conf.mean:.3f} | dets {tr.det.det_count}")
 
-            # Print a compact “what was detected” summary per trial
             top_cls = ", ".join([f"{c}({n})" for c, n in tr.det.top_classes(5)]) or "none"
             top_col = ", ".join([f"{c}({n})" for c, n in tr.det.top_colors(5)]) or "none"
             top_pair = ", ".join([f"{k[0]}-{k[1]}({n})" for k, n in tr.det.top_class_color_pairs(5)]) or "none"
@@ -243,7 +315,6 @@ class FrameMatchedBenchmark:
             print(f"  Top colors:  {top_col}")
             print(f"  Top pairs:   {top_pair}")
 
-            # Per-class mean confidence for top classes
             cmc = tr.det.class_mean_conf()
             top_classes = [c for c, _ in tr.det.top_classes(5)]
             if top_classes:
@@ -264,7 +335,7 @@ class FrameMatchedBenchmark:
 
         print("OVERALL DETECTIONS")
         print(f"Total detections: {st_det.det_count}")
-        print(f"Mean confidence (proxy accuracy): {st_det.det_conf.summary('')}")
+        print(f"Mean confidence (proxy): {st_det.det_conf.summary('')}")
         print(f"Top objects: {', '.join([f'{c}({n})' for c, n in st_det.top_classes(10)]) or 'none'}")
         print(f"Top colors:  {', '.join([f'{c}({n})' for c, n in st_det.top_colors(10)]) or 'none'}")
         top_pairs = st_det.top_class_color_pairs(10)

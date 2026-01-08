@@ -51,7 +51,7 @@ def main():
     width = DEFAULT_WIDTH
     height = DEFAULT_HEIGHT
     cam_fps = DEFAULT_CAM_FPS
-    model_path = "yolo11n.pt"
+    model_path = "models/yolo11n_object365.pt"
 
     if frames <= 0:
         raise ValueError("DEFAULT_TOTAL_FRAMES must be > 0 (edit config/settings.py).")

@@ -3,9 +3,9 @@ TRIALS = 12
 
 # Benchmark defaults
 DEFAULT_TOTAL_FRAMES = 600   # frame-matched run length
-DEFAULT_IMGSZ = 512
-DEFAULT_CONF = 0.25
-VERSION = "3.0.1"
+DEFAULT_IMGSZ = 640
+DEFAULT_CONF = 0.40
+VERSION = "3.0.2"
 
 # Camera defaults
 DEFAULT_WIDTH = 1280

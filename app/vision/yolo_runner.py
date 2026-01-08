@@ -21,6 +21,9 @@ class YoloRunner:
     """
     def __init__(self, model_path: str):
         self.model = YOLO(model_path)
+        names = self.model.names
+        print(f"[YOLO] weights={model_path} | classes={len(names)}")
+        print(f"[YOLO] sample classes: {list(names.values())[:25]}")
 
     def predict(self, frame_bgr: np.ndarray, imgsz: int, conf_thres: float) -> List[Detection]:
         results = self.model.predict(source=frame_bgr, imgsz=imgsz, conf=conf_thres, verbose=False)
