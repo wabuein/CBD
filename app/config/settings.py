@@ -5,7 +5,7 @@ TRIALS = 12
 DEFAULT_TOTAL_FRAMES = 600   # frame-matched run length
 DEFAULT_IMGSZ = 640
 DEFAULT_CONF = 0.40
-VERSION = "3.0.2"
+VERSION = "3.0.3"
 
 # Camera defaults
 DEFAULT_WIDTH = 1280
