@@ -156,6 +156,8 @@ class FrameMatchedBenchmark:
 
             # Foreground mask (belt/background removal)
             fg = masker.mask(frame)
+            masked = frame.copy()
+            masked[fg == 0] = 0  # keep only foreground
 
             # ---- Lighting ----
             light_pct, v_mean, luma_mean = compute_light_level(frame)

@@ -46,4 +46,11 @@ class YoloRunner:
                     )
                 )
 
+                # ---- CHANGE #5: class allowlist safety net ----
+        ALLOWED = {
+            "Apple", "Banana", "Orange", "Strawberry",
+            "Pineapple", "Pear", "Kiwi fruit", "Coconut"
+        }
+        detections = [d for d in detections if d.cls_name in ALLOWED]
+
         return detections

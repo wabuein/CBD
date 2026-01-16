@@ -16,6 +16,7 @@ from app.config.settings import (
 )
 
 from app.camera.camera import open_capture, apply_camera_settings
+from app.training.auto_train import ensure_fruit_model
 from app.vision.yolo_runner import YoloRunner
 from app.benchmark.frame_benchmark import FrameMatchedBenchmark
 
@@ -51,7 +52,9 @@ def main():
     width = DEFAULT_WIDTH
     height = DEFAULT_HEIGHT
     cam_fps = DEFAULT_CAM_FPS
-    model_path = "models/yolo11n_object365.pt"
+
+    FRUIT_WEIGHTS = "models/yolo11n_fruits.pt"  
+    model_path = ensure_fruit_model(FRUIT_WEIGHTS)
 
     if frames <= 0:
         raise ValueError("DEFAULT_TOTAL_FRAMES must be > 0 (edit config/settings.py).")

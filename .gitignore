@@ -12,6 +12,9 @@ __pycache__/
 venv/
 .env/
 yolo-pi/
+data/
+coco_converted2/
+runs/
 
 # =========================
 # OS / Editor

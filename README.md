@@ -1,76 +1,79 @@
-# YOLO Object and Color Detection
+### Updated README (drop-in replacement)
+
+# YOLO Fruit Object + Color Detection (CBD)
 
 ### Final Year Project – Reconfigurable Conveyor Sorting System with AI-Based Object Classification (CBD)
 
-This repository implements a **real-time object and color detection system** using **Ultralytics YOLO** deep-learning models.
-The system forms the vision and benchmarking core of the **Reconfigurable Conveyor Sorting System with AI-Based Object Classification (CBD)**.
+This repository implements a **real-time fruit detection and color estimation system** using **Ultralytics YOLO**.
+It is the vision + benchmarking core of the **Reconfigurable Conveyor Sorting System with AI-Based Object Classification (CBD)**.
 
-It detects everyday objects, estimates their dominant color using a lightweight HSV-based pipeline, and evaluates real-time performance using a **frame-matched benchmarking methodology** designed for fair comparison between heterogeneous platforms.
+Unlike generic datasets/models (e.g., COCO / Objects365), this project is designed to run with a **fruit-specific YOLO model** to eliminate “donut/vase/sink” style confusion and provide reliable classifications for conveyor sorting use-cases.
 
-The system is designed to run on both:
+The system is designed to run on:
 
-* a **laptop** (development, testing, and benchmarking), and
-* a **Raspberry Pi 5** (low-power embedded deployment),
+* **Laptop** (development + benchmarking)
+* **Raspberry Pi 5** (embedded deployment)
 
-with a strong emphasis on **modularity, reproducibility, and experimental validity**.
+with an emphasis on **modularity, reproducibility, and experimental validity**.
 
 ---
 
 ## Objectives
 
-* Detect multiple common objects in real time using a pretrained YOLO model.
-* Estimate the dominant color of each detected object using HSV color analysis.
-* Run efficiently on low-power hardware such as the Raspberry Pi 5.
-* Provide a **robust, frame-matched benchmarking framework** for fair laptop vs Raspberry Pi comparison.
-* Record **what was detected**, **how confidently**, and **how fast**, per trial.
-* Serve as an extensible base for conveyor sorting, robotics, and intelligent automation systems.
+* Detect **fruits** in real time using a YOLO model trained specifically for fruit classes.
+* Estimate dominant color for the detected fruit using a lightweight, mask-aware color pipeline.
+* Run efficiently on low-power hardware (Raspberry Pi 5).
+* Provide a **frame-matched benchmarking framework** for fair laptop vs Pi comparisons.
+* Record **what was detected**, **confidence**, **color**, and **timings**, per trial and overall.
 
 ---
 
 ## System Architecture
 
-The project follows a **single-entry-point, modular package-based design**.
+Single entry-point with modular packages:
 
 ```
 CBD/
-├── main.py                  # single entry point
-├── yolo11n.pt
+├── main.py                          # single entry point
+├── models/
+│   └── fruit_yolo.pt                # fruit-specific YOLO weights (auto-downloaded or user-provided)
 │
-├── config/                  # experiment & camera defaults
-│   └── settings.py
+├── app/
+│   ├── config/
+│   │   └── settings.py              # experiment + camera defaults
+│   ├── camera/
+│   │   └── camera.py                # camera handling & backends
+│   ├── vision/
+│   │   ├── yolo_runner.py           # YOLO wrapper + fruit allowlist filter
+│   │   ├── color_utils.py           # mask-aware color naming + white balance
+│   │   └── mask_utils.py            # background masking + fallback bbox
+│   ├── benchmark/
+│   │   └── frame_benchmark.py       # frame-matched benchmark engine
+│   └── utils/
+│       └── stats.py                 # running stats + detection aggregation
 │
-├── camera/                  # camera handling & backends
-│   └── camera.py
-│
-├── vision/                  # vision utilities
-│   ├── yolo_runner.py       # YOLO wrapper
-│   └── color_utils.py       # HSV color estimation
-│
-├── benchmark/               # benchmarking engine
-│   └── frame_benchmark.py
-│
-├── utils/                   # statistics & aggregation
-│   └── stats.py
+├── requirements.txt
+└── README.md
 ```
 
 Only **`main.py`** is executed directly.
-All other components are imported as modules, improving maintainability and extensibility.
 
 ---
 
 ## Per-Frame Processing Pipeline
 
-Each frame is processed in three clearly separated stages:
+Each frame is processed in three stages:
 
-1. **Frame capture** from a USB or CSI camera
-2. **YOLO inference** using Ultralytics’ `predict()` pipeline
-3. **Post-processing**, including:
+1. **Capture** frame from camera / stream
+2. **YOLO inference** (fruit-specific model)
+3. **Post-processing**
 
-   * bounding-box rendering
-   * dominant color estimation
-   * metric and detection aggregation
+   * choose a single primary detection per frame (largest bbox)
+   * background masking (belt removal) + fallback bbox when YOLO misses
+   * dominant color estimation (mask-aware)
+   * per-frame timing + per-trial aggregation
 
-Each stage is timed independently to identify performance bottlenecks.
+Each stage is timed independently (capture / inference / post / end-to-end).
 
 ---
 
@@ -78,110 +81,116 @@ Each stage is timed independently to identify performance bottlenecks.
 
 ### Frame-Matched, Fixed-Trial Design
 
-To ensure a **fair and scientifically valid comparison** between the laptop and Raspberry Pi, the system uses a **frame-matched benchmark design**.
+To ensure a fair comparison between laptop and Raspberry Pi:
 
-### Key design choices
+* Fixed total frames per run (default: **600**)
+* Fixed number of trials: **12**
+* Frames split evenly: **12 × 50**
 
-* **Fixed total number of frames per run** (default: 600 frames)
-* **Fixed number of trials: 12** (non-configurable by design)
-* Frames are split evenly:
-
-  * 600 frames → **12 trials × 50 frames per trial**
-
-### Why frame-matched?
-
-In time-matched benchmarks, faster devices process more frames, leading to unequal sample sizes and biased averages.
-By fixing the number of frames, both platforms process the **same number of observations**, enabling a clean, per-frame efficiency comparison.
+Why frame-matched?
+Time-matched benchmarks allow faster devices to process more frames → biased averages.
+Frame-matched ensures both platforms process the **same number of observations**.
 
 ---
 
 ## Recorded Metrics (Per Trial & Overall)
 
-For **each trial** and for the **entire run**, the system reports:
+### Performance
 
-### Performance metrics
+* capture time (ms)
+* inference time (ms)
+* post-processing time (ms)
+* end-to-end latency (ms)
+* derived FPS
 
-* Capture time (ms)
-* Inference time (ms)
-* Post-processing time (ms)
-* End-to-end latency (ms)
-* Derived FPS
+### Environment
 
-### Environmental metrics
+* brightness %
+* HSV V mean
+* grayscale luminance mean
 
-* Scene brightness (%)
-* HSV V-channel mean
-* Grayscale luminance mean
+### Detections
 
-### Detection metrics
-
-* Total detections per trial
-* **Mean confidence** (used as an *accuracy proxy* for live video)
-* Top detected object classes
-* Top detected colors
-* Top object–color pairs
-* Mean confidence per object class
-
-> **Note:** True accuracy (precision / recall / mAP) requires ground-truth labels and is therefore not computed for live camera input. Mean confidence is used as a practical proxy.
+* detections per trial
+* mean confidence (proxy accuracy for live video)
+* top classes / colors / class-color pairs
+* mean confidence per class
 
 ---
 
-## Installation (Laptop Setup)
+## Installation
 
 ```bash
-# 1. Create and activate virtual environment
-python -m venv yolo-pi
-yolo-pi\Scripts\activate        # Windows
+# 1) Create venv
+python -m venv venv
+
+# 2) Activate
+venv\Scripts\activate          # Windows
 # or
-source yolo-pi/bin/activate    # macOS / Linux
+source venv/bin/activate       # macOS/Linux
 
-# 2. Install dependencies
+# 3) Install dependencies
 pip install --upgrade pip
-pip install ultralytics opencv-python torch torchvision torchaudio
+pip install -r requirements.txt
+```
+
+Example `requirements.txt`:
+
+```txt
+ultralytics
+opencv-python
+numpy
+torch
+torchvision
 ```
 
 ---
 
-## Running the System
-
-### Frame-Matched Benchmark 
+## Running
 
 ```bash
-python main.py --source 0 
+python main.py --source 0
 ```
 
-Benchmark flow:
+Flow:
 
-* A **READY** screen appears
-* Press **R** to start the benchmark
-* The system processes exactly 600 frames
-* 12 trials are executed automatically
-* Per-trial and overall summaries are printed to the terminal
-* The final frame freezes on screen
-* Press **R** to run again, **Q** to quit
-
----
+* READY screen appears
+* Press **R** to run benchmark (auto runs 600 frames, 12 trials)
+* Prints per-trial + overall summaries in terminal
+* Final frame freezes
+* Press **R** to rerun, **Q/ESC** to quit
 
 ### Optional Flags
 
-* ``--source (0, 1, 2)``: to access main device cam or external.
-* ``--backend (auto|any|dshow|msmf|v4l2|avfoundation|gstreamer)``: for different devices (windows, mac, rasberry)
-* ``--mjpg``: mainly used for external cam on rasberry pi
-* ``--no_draw``: doesn't draw boxes
+* `--source 0/1/2` camera index OR a file/URL path
+* `--backend auto|any|dshow|msmf|v4l2|avfoundation|gstreamer`
+* `--mjpg` (helps some USB cams / Pi setups)
+* `--no_draw` disables boxes + color naming (speed testing)
+
+---
+
+## Fruit Model Notes (Important)
+
+This project expects a **fruit-specific YOLO weights file** (e.g., `models/fruit_yolo.pt`).
+
+To protect the system from “COCO junk detections”, the pipeline includes an optional **fruit allowlist filter** inside:
+
+* `app/vision/yolo_runner.py`
+
+So even if the model outputs extra labels, only allowed fruit classes are kept.
 
 ---
 
 ## Applications
 
-* Reconfigurable conveyor sorting systems
-* Robotics and autonomous platforms
-* Smart manufacturing and industrial inspection
-* Embedded AI benchmarking and optimisation studies
+* conveyor fruit sorting
+* robotics perception + automation
+* embedded AI benchmarking and optimisation
+* industrial inspection pipelines
 
 ---
 
 ## References
 
-* Ultralytics YOLO Documentation: [https://docs.ultralytics.com](https://docs.ultralytics.com)
-* Objects365 Dataset: [https://www.objects365.org](https://www.objects365.org)
-* OpenCV Documentation: [https://docs.opencv.org](https://docs.opencv.org)
+* Ultralytics YOLO Docs (official)
+* OpenCV Docs
