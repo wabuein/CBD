@@ -1,8 +1,4 @@
-Below is a clean, professional README tailored for your AI Conveyor Belt Detection System project. It reflects your hardware, architecture, and current development stage (testing sensors → integration → YOLO sorting). You can paste it directly into README.md on GitHub.
-
-⸻
-
-AI Conveyor Belt Sorting System
+## AI Conveyor Belt Sorting System
 
 An intelligent conveyor belt system that uses computer vision, sensors, and embedded control to detect, classify, measure, and sort objects automatically.
 
@@ -19,7 +15,7 @@ The system detects objects on a conveyor belt, measures their physical dimension
 
 ⸻
 
-System Architecture
+## System Architecture
 
 Camera
    │
@@ -39,7 +35,7 @@ The Raspberry Pi handles AI and decision-making, while the Pico manages real-tim
 
 ⸻
 
-Hardware Components
+## Hardware Components
 
 Processing
 	•	Raspberry Pi
@@ -62,7 +58,7 @@ Conveyor
 
 ⸻
 
-GPIO Pin Configuration
+## GPIO Pin Configuration
 
 Raspberry Pi
 
@@ -80,7 +76,7 @@ Pin 29	GPIO5	IR Sensor 2
 
 ⸻
 
-Object Measurement Method
+## Object Measurement Method
 
 Object length is calculated using beam interruption timing:
 
@@ -100,7 +96,7 @@ Length = 6 × 50 mm/s = 300 mm
 
 ⸻
 
-Sorting Logic
+## Sorting Logic
 
 After analysis, the object is routed via a servo gate.
 
@@ -120,7 +116,7 @@ The system interprets the path and directs the object accordingly.
 
 ⸻
 
-AI Object Detection
+## AI Object Detection
 
 The system uses YOLO (Ultralytics) for object detection.
 
@@ -137,7 +133,7 @@ YOLOv11 Nano
 
 ⸻
 
-Conveyor Control
+## Conveyor Control
 
 The Raspberry Pi communicates with the Pico via USB serial.
 
@@ -156,28 +152,7 @@ PONG
 
 ⸻
 
-Current Development Status
-
-Completed
-	•	Conveyor hardware integration
-	•	Pico relay motor control
-	•	IR break-beam detection
-	•	Servo diverter control
-	•	Raspberry Pi ↔ Pico serial communication
-
-In Progress
-	•	Ultrasonic dimension measurement
-	•	YOLO detection pipeline
-	•	User rule parsing
-
-Planned
-	•	Multi-conveyor routing
-	•	Dataset training
-	•	Performance optimization
-
-⸻
-
-Installation
+## Installation
 
 Clone repository
 
@@ -188,41 +163,6 @@ Install dependencies
 
 pip install ultralytics opencv-python numpy pyserial RPi.GPIO
 
-
-⸻
-
-Running the System
-
-Start the main control program:
-
-python conveyor_controller.py
-
-The system will:
-	1.	Start the conveyor
-	2.	Detect objects with IR1
-	3.	Stop the belt
-	4.	Measure dimensions
-	5.	Run YOLO analysis
-	6.	Resume belt
-	7.	Trigger servo at IR2
-
-⸻
-
-Safety Notes
-	•	Raspberry Pi GPIO pins are 3.3V only
-	•	Ultrasonic echo pins must use a voltage divider
-	•	Break-beam outputs require pull-up resistors
-	•	Avoid hot-swapping power lines
-
-⸻
-
-Future Improvements
-	•	multi-class dataset training
-	•	adaptive belt speed detection
-	•	automatic calibration
-	•	database logging
-	•	dashboard interface
-
 ⸻
 
 License
@@ -230,5 +170,3 @@ License
 MIT License
 
 ⸻
-
-If you want, I can also help you write a much stronger GitHub README that looks like a serious robotics / AI research project (with diagrams, badges, and visuals). It will make the repo look **far more impressive for portfolios or investors.
