@@ -13,8 +13,6 @@ This project integrates:
 
 The system detects objects on a conveyor belt, measures their physical dimensions, analyzes them using AI, and then routes them to the correct destination.
 
-⸻
-
 ## System Architecture
 
 Camera
@@ -32,8 +30,6 @@ Raspberry Pi Pico (Real-time Control)
    └── Ultrasonic Sensors
 
 The Raspberry Pi handles AI and decision-making, while the Pico manages real-time hardware control.
-
-⸻
 
 ## Hardware Components
 
@@ -56,8 +52,6 @@ Conveyor
 	•	24V Stainless Steel Conveyor Belt
 	•	Speed: ~50 mm/s
 
-⸻
-
 ## GPIO Pin Configuration
 
 Raspberry Pi
@@ -73,8 +67,6 @@ Pin 18	GPIO24	Ultrasonic 2 ECHO
 Pin 22	GPIO25	IR Sensor 1
 Pin 29	GPIO5	IR Sensor 2
 
-
-⸻
 
 ## Object Measurement Method
 
@@ -94,8 +86,6 @@ Movement time: 6 seconds
 Length = 6 × 50 mm/s = 300 mm
 
 
-⸻
-
 ## Sorting Logic
 
 After analysis, the object is routed via a servo gate.
@@ -114,8 +104,6 @@ Path: C5
 
 The system interprets the path and directs the object accordingly.
 
-⸻
-
 ## AI Object Detection
 
 The system uses YOLO (Ultralytics) for object detection.
@@ -130,8 +118,6 @@ Model used:
 
 YOLOv11 Nano
 
-
-⸻
 
 ## Conveyor Control
 
@@ -150,8 +136,6 @@ OK STOP
 PONG
 
 
-⸻
-
 ## Installation
 
 Clone repository
@@ -163,10 +147,8 @@ Install dependencies
 
 pip install ultralytics opencv-python numpy pyserial RPi.GPIO
 
-⸻
-
-License
+## License
 
 MIT License
 
-⸻
+
