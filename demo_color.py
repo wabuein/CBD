@@ -1,480 +1,336 @@
-import argparse
 import time
-import platform
+import re
 import cv2
 import numpy as np
+import serial
+import RPi.GPIO as GPIO
 from ultralytics import YOLO
-import psutil
-from collections import Counter, defaultdict
 
+# -----------------------------
+# YOUR RPi PIN LIST (BCM)
+# -----------------------------
+PIN_SERVO = 18   # Pin 12 (GPIO18)  -> SC90 Servo signal
 
-def colour_name_from_bgr(bgr_crop: np.ndarray) -> str:
-    if bgr_crop is None or bgr_crop.size == 0:
-        return "unknown"
+PIN_TRIG1 = 17   # Pin 13 (GPIO17)  -> US1 TRIG  (choose which is width/thickness below)
+PIN_ECHO1 = 22   # Pin 15 (GPIO22)  -> US1 ECHO  (through divider)
+PIN_TRIG2 = 23   # Pin 16 (GPIO23)  -> US2 TRIG
+PIN_ECHO2 = 24   # Pin 18 (GPIO24)  -> US2 ECHO
 
-    h_img, w_img = bgr_crop.shape[:2]
-    if h_img < 4 or w_img < 4:
-        return "unknown"
+PIN_IR1 = 25     # Pin 22 (GPIO25)  -> IR1 (stop + length gate)
+PIN_IR2 = 5      # Pin 29 (GPIO5)   -> IR2 (servo timing)
 
-    py = int(0.2 * h_img)
-    px = int(0.2 * w_img)
-    cx = bgr_crop[py:h_img - py, px:w_img - px]
-    if cx.size == 0:
-        cx = bgr_crop
+# -----------------------------
+# CONFIG YOU MUST SET
+# -----------------------------
+# Belt speed when running at your chosen signal voltage (e.g. 24V moderate).
+# Start with manufacturer: 50 mm/s, then calibrate.
+BELT_SPEED_MM_S = 50.0
 
-    cx = cv2.medianBlur(cx, 3)
-    hsv = cv2.cvtColor(cx, cv2.COLOR_BGR2HSV)
-    H, S, V = cv2.split(hsv)
+# IR polarity: many IR modules output LOW when triggered.
+IR_ACTIVE_LOW = True
 
-    s_mean = float(np.mean(S))
-    v_mean = float(np.mean(V))
-    if s_mean < 20:
-        if v_mean > 200:
-            return "white"
-        if v_mean < 55:
-            return "black"
-        return "gray"
+# YOLO config
+MODEL_PATH = "yolo11n.pt"
+CAM_SOURCE = 1
+YOLO_FRAMES = 600
+YOLO_IMGSZ = 512
+YOLO_CONF  = 0.25
 
-    mask = (S > 30) & (V > 40) & (V < 230)
-    if mask.sum() < 50:
-        if v_mean > 200:
-            return "white"
-        if v_mean < 55:
-            return "black"
-        return "gray"
+# Pico USB serial
+PICO_PORT = "/dev/ttyACM0"  # might be /dev/ttyACM1
+PICO_BAUD = 115200
 
-    Hm = H[mask].astype(np.int32)
-    Sm = S[mask].astype(np.float32) / 255.0
-    Vm = V[mask].astype(np.float32) / 255.0
-    weights = Sm * Vm
+# Script file
+SCRIPT_FILE = "script.txt"
 
-    hist = np.bincount(Hm, weights=weights, minlength=180).astype(np.float32)
-    peak = int(np.argmax(hist))
-    red_wrap = hist[0:10].sum() + hist[170:180].sum()
+# Servo positions (duty %) - tune for your hardware
+SERVO_NEUTRAL = 7.5
+SERVO_LEFT    = 10.5
+SERVO_RIGHT   = 4.5
 
-    def hue_to_name(h):
-        if h < 10 or h >= 170:
-            return "red"
-        if h < 25:
-            return "orange"
-        if h < 35:
-            return "yellow"
-        if h < 85:
-            return "green"
-        if h < 100:
-            return "cyan"
-        if h < 135:
-            return "blue"
-        if h < 160:
-            return "purple"
-        return "magenta"
+# Debounce / stability times
+IR_OFF_STABLE_S = 0.12   # IR1 must be OFF continuously for this long to count as cleared
+LOOP_DT = 0.005
 
-    name = hue_to_name(peak)
-    if red_wrap > hist[peak] * 1.2:
-        name = "red"
+# Ultrasonic
+SPEED_OF_SOUND = 343.0
+ULTRA_TIMEOUT_S = 0.03
 
-    return name
+# Which ultrasonic does what (based on your placement):
+# - Top ultrasonic = thickness
+# - Side ultrasonic = width
+# Choose which sensor (1 or 2) is TOP/SIDE.
+US_TOP = 2     # set to 1 or 2
+US_SIDE = 1    # set to 1 or 2
 
+def gpio_setup():
+    GPIO.setmode(GPIO.BCM)
 
-def open_capture(src_str: str, backend: str = "auto"):
-    source = int(src_str) if src_str.isdigit() else src_str
+    # IR inputs: use pull-ups if active-low
+    pud = GPIO.PUD_UP if IR_ACTIVE_LOW else GPIO.PUD_DOWN
+    GPIO.setup(PIN_IR1, GPIO.IN, pull_up_down=pud)
+    GPIO.setup(PIN_IR2, GPIO.IN, pull_up_down=pud)
 
-    backend_map = {
-        "auto": 0,
-        "dshow": cv2.CAP_DSHOW,
-        "msmf": cv2.CAP_MSMF,
-        "v4l2": cv2.CAP_V4L2,
-        "gstreamer": cv2.CAP_GSTREAMER,
-        "ffmpeg": cv2.CAP_FFMPEG,
-    }
+    # Ultrasonics
+    for trig in (PIN_TRIG1, PIN_TRIG2):
+        GPIO.setup(trig, GPIO.OUT)
+        GPIO.output(trig, 0)
+    for echo in (PIN_ECHO1, PIN_ECHO2):
+        GPIO.setup(echo, GPIO.IN)
 
-    if backend not in backend_map:
-        raise ValueError(f"Unknown backend '{backend}'. Choose from: {', '.join(backend_map.keys())}")
+    # Servo
+    GPIO.setup(PIN_SERVO, GPIO.OUT)
 
-    if backend != "auto":
-        cap = cv2.VideoCapture(source, backend_map[backend])
-        if cap.isOpened():
-            return cap
+def ir_triggered(pin: int) -> bool:
+    v = GPIO.input(pin)
+    return (v == 0) if IR_ACTIVE_LOW else (v == 1)
 
-    cap = cv2.VideoCapture(source)
-    if cap.isOpened():
-        return cap
+def pico_send(ser: serial.Serial, cmd: str, timeout=1.0) -> str:
+    ser.write((cmd.strip() + "\n").encode("utf-8"))
+    ser.flush()
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if ser.in_waiting:
+            return ser.readline().decode("utf-8", errors="ignore").strip()
+        time.sleep(0.01)
+    return ""
 
-    if platform.system() == "Windows" and isinstance(source, int):
-        cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
-        if cap.isOpened():
-            return cap
+def servo_init():
+    pwm = GPIO.PWM(PIN_SERVO, 50)  # 50Hz
+    pwm.start(0)
+    return pwm
 
-    raise RuntimeError(f"Could not open source: {src_str} (backend={backend})")
+def servo_set(pwm, duty: float):
+    pwm.ChangeDutyCycle(duty)
+    time.sleep(0.35)
+    pwm.ChangeDutyCycle(0)
 
+def measure_distance_cm(trig_pin: int, echo_pin: int) -> float | None:
+    GPIO.output(trig_pin, 0)
+    time.sleep(0.000002)
+    GPIO.output(trig_pin, 1)
+    time.sleep(0.00001)
+    GPIO.output(trig_pin, 0)
 
-def draw_labelled_box(img, x1, y1, x2, y2, text):
-    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-    cv2.rectangle(img, (x1, max(0, y1 - th - 8)), (x1 + tw + 6, y1), (0, 255, 0), -1)
-    cv2.putText(img, text, (x1 + 3, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2, cv2.LINE_AA)
-
-
-def light_percent_from_bgr(frame: np.ndarray) -> float:
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    v = hsv[:, :, 2].astype(np.float32)
-    return float(np.mean(v) / 255.0 * 100.0)
-
-
-def safe_cpu_temp_c():
-    try:
-        temps = psutil.sensors_temperatures()
-        if not temps:
+    t0 = time.time()
+    while GPIO.input(echo_pin) == 0:
+        if time.time() - t0 > ULTRA_TIMEOUT_S:
             return None
-        for key in ("cpu_thermal", "coretemp", "soc_thermal"):
-            if key in temps and temps[key]:
-                vals = [t.current for t in temps[key] if t.current is not None]
-                if vals:
-                    return float(np.mean(vals))
-        all_vals = []
-        for group in temps.values():
-            for t in group:
-                if t.current is not None:
-                    all_vals.append(t.current)
-        return float(np.mean(all_vals)) if all_vals else None
-    except Exception:
+    start = time.time()
+
+    while GPIO.input(echo_pin) == 1:
+        if time.time() - start > ULTRA_TIMEOUT_S:
+            return None
+    end = time.time()
+
+    dt = end - start
+    dist_m = (SPEED_OF_SOUND * dt) / 2.0
+    return dist_m * 100.0
+
+def us_pins(which: int):
+    if which == 1:
+        return PIN_TRIG1, PIN_ECHO1
+    return PIN_TRIG2, PIN_ECHO2
+
+def read_ultrasound_averaged(which: int, samples: int = 7, delay: float = 0.02):
+    trig, echo = us_pins(which)
+    vals = []
+    for _ in range(samples):
+        d = measure_distance_cm(trig, echo)
+        if d is not None:
+            vals.append(d)
+        time.sleep(delay)
+    if not vals:
         return None
+    vals.sort()
+    # median is robust
+    return vals[len(vals)//2]
 
+def parse_user_script(path: str) -> dict:
+    """
+    Accepts:
+    Object: apple, optional: color:red, optional: width:50, length:80, thickness:20, min_conf:0.4, path:C5
+    """
+    out = {}
+    try:
+        txt = open(path, "r", encoding="utf-8").read().strip()
+    except FileNotFoundError:
+        return out
 
-def mean_std(x):
-    x = np.array(x, dtype=np.float64)
-    if x.size == 0:
-        return 0.0, 0.0
-    return float(x.mean()), float(x.std(ddof=1)) if x.size > 1 else 0.0
+    def grab(key):
+        m = re.search(rf"{key}\s*:\s*([^,\n]+)", txt, flags=re.IGNORECASE)
+        return m.group(1).strip() if m else None
 
+    out["object"] = grab("object")
+    out["color"] = grab("color")
+    out["width"] = float(grab("width")) if grab("width") else None
+    out["length"] = float(grab("length")) if grab("length") else None
+    out["thickness"] = float(grab("thickness")) if grab("thickness") else None
 
-def top_k_counter(counter: Counter, k: int = 5):
-    return counter.most_common(k)
+    mc = grab("min_conf") or grab("minimum confidence")
+    out["min_conf"] = float(mc) if mc else None
 
+    out["path"] = grab("path")
+    return out
 
-def main():
-    ap = argparse.ArgumentParser(description="YOLO benchmark: FPS + light% + CPU + detections + confidence + colour (with live view)")
-    ap.add_argument("--model", default="yolo11n.pt")
-    ap.add_argument("--source", default="1", help="External camera index (often 1) or a video path.")
-    ap.add_argument("--backend", default="auto", help="auto, dshow, msmf, v4l2, gstreamer, ffmpeg")
-    ap.add_argument("--imgsz", type=int, default=512)
-    ap.add_argument("--conf", type=float, default=0.25)
-    ap.add_argument("--width", type=int, default=1280)
-    ap.add_argument("--height", type=int, default=720)
+def decide_direction(rule: dict) -> str:
+    p = (rule.get("path") or "").strip().upper()
+    if re.fullmatch(r"C\d+", p):
+        return "LEFT"
+    return "RIGHT"
 
-    ap.add_argument("--trials", type=int, default=12)
-    ap.add_argument("--frames_per_trial", type=int, default=50)
-    ap.add_argument("--warmup", type=int, default=10)
+def run_yolo_600(model: YOLO, cap: cv2.VideoCapture,
+                frames=YOLO_FRAMES, imgsz=YOLO_IMGSZ, conf=YOLO_CONF):
+    confs = []
+    class_counts = {}
+    t0 = time.time()
 
-    ap.add_argument("--topk", type=int, default=5, help="How many top classes/colours to print per trial.")
-    ap.add_argument("--show_fps", action="store_true", help="Overlay rolling FPS on the video.")
-    args = ap.parse_args()
-
-    total_frames = args.trials * args.frames_per_trial
-
-    model = YOLO(args.model)
-    cap = open_capture(args.source, backend=args.backend)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
-
-    proc = psutil.Process()
-    psutil.cpu_percent(interval=None)
-    proc.cpu_percent(interval=None)
-
-    win = "YOLO Benchmark (live) — press Q or ESC to quit"
-    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-
-    print("\n=== BENCHMARK CONFIG ===")
-    print(f"Model:            {args.model}")
-    print(f"Source:           {args.source} (backend={args.backend})")
-    print(f"Resolution:       {args.width}x{args.height}")
-    print(f"imgsz/conf:       {args.imgsz} / {args.conf}")
-    print(f"Trials:           {args.trials}")
-    print(f"Frames/trial:     {args.frames_per_trial}")
-    print(f"Total frames:     {total_frames}")
-    print(f"Warmup frames:    {args.warmup}")
-    print("Colour pipeline:  ON (always)")
-    print("========================\n")
-
-    # Warmup (includes detection + colour path)
-    for _ in range(args.warmup):
+    for _ in range(frames):
         ok, frame = cap.read()
         if not ok:
-            raise RuntimeError("Camera/video ended during warmup.")
-        results = model.predict(source=frame, imgsz=args.imgsz, conf=args.conf, verbose=False)
+            break
+        results = model.predict(source=frame, imgsz=imgsz, conf=conf, verbose=False)
         for r in results:
+            names = r.names
             boxes = r.boxes
-            if boxes is None or boxes.xyxy is None:
+            if boxes is None:
                 continue
-            for xyxy in boxes.xyxy:
-                x1, y1, x2, y2 = map(int, xyxy.tolist())
-                h, w = frame.shape[:2]
-                x1, y1 = max(0, x1), max(0, y1)
-                x2, y2 = min(w - 1, x2), min(h - 1, y2)
+            for cls, c in zip(boxes.cls, boxes.conf):
+                c = float(c)
+                confs.append(c)
+                ci = int(cls)
+                cname = names.get(ci, str(ci)) if isinstance(names, dict) else names[ci]
+                class_counts[cname] = class_counts.get(cname, 0) + 1
 
-                ch = y2 - y1
-                cw = x2 - x1
-                if ch < 2 or cw < 2:
-                    continue
-                cy1 = y1 + int(0.2 * ch)
-                cy2 = y2 - int(0.2 * ch)
-                cx1 = x1 + int(0.2 * cw)
-                cx2 = x2 - int(0.2 * cw)
-                cy1, cy2 = max(0, cy1), max(cy1 + 1, cy2)
-                cx1, cx2 = max(0, cx1), max(cx1 + 1, cx2)
-                crop = frame[cy1:cy2, cx1:cx2]
-                _ = colour_name_from_bgr(crop)
+    t1 = time.time()
+    top = sorted(class_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+    return {
+        "frames_done": len(confs),
+        "mean_conf": float(np.mean(confs)) if confs else 0.0,
+        "top_classes": top,
+        "yolo_seconds": t1 - t0,
+    }
 
-        _ = light_percent_from_bgr(frame)
-        psutil.cpu_percent(interval=None)
-        proc.cpu_percent(interval=None)
+def wait_ir_off_stable(pin: int, stable_s: float) -> float:
+    """
+    Wait until IR is NOT triggered continuously for stable_s.
+    Returns the timestamp when stable OFF is achieved.
+    """
+    off_start = None
+    while True:
+        if not ir_triggered(pin):
+            if off_start is None:
+                off_start = time.time()
+            if time.time() - off_start >= stable_s:
+                return time.time()
+        else:
+            off_start = None
+        time.sleep(LOOP_DT)
 
-    # per-trial aggregates
-    trial_fps, trial_light = [], []
-    trial_cpu, trial_proc_cpu = [], []
-    trial_ram_mb, trial_proc_ram_mb = [], []
-    trial_freq_mhz, trial_temp_c = [], []
-    trial_mean_conf = []  # confidence as a proxy for "accuracy"
-    trial_total_dets = []
+def main():
+    gpio_setup()
 
-    # global aggregates
-    global_class_counts = Counter()
-    global_colour_counts = Counter()
-    global_conf_list = []
+    servo_pwm = servo_init()
+    servo_set(servo_pwm, SERVO_NEUTRAL)
 
-    rolling_fps = 0.0
-    t_prev = time.perf_counter()
+    # Camera + model
+    model = YOLO(MODEL_PATH)
+    cap = cv2.VideoCapture(CAM_SOURCE)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-    frames_done = 0
+    # Pico serial
+    ser = serial.Serial(PICO_PORT, PICO_BAUD, timeout=0.1)
+    time.sleep(1.0)
+    pico_send(ser, "PING")
 
-    for t in range(1, args.trials + 1):
-        # trial samples
-        light_samples = []
-        cpu_samples = []
-        proc_cpu_samples = []
-        ram_samples = []
-        proc_ram_samples = []
-        freq_samples = []
-        temp_samples = []
+    # Start conveyor
+    pico_send(ser, "RUN")
+    print("RUNNING. Waiting for IR1 to detect an object...")
 
-        class_counts = Counter()
-        colour_counts = Counter()
-        conf_list = []
-        class_conf_sum = defaultdict(float)
-        class_conf_count = defaultdict(int)
+    try:
+        while True:
+            # ---------- WAIT FOR IR1 ON ----------
+            while not ir_triggered(PIN_IR1):
+                time.sleep(LOOP_DT)
 
-        t0 = time.perf_counter()
+            # Timer1 starts: object is detected at IR1
+            t_block_start = time.time()
+            print(f"IR1 ON -> t_block_start={t_block_start:.3f}")
 
-        for fidx in range(1, args.frames_per_trial + 1):
-            ok, frame = cap.read()
-            if not ok:
-                raise RuntimeError(f"Camera/video ended early at frame {frames_done}/{total_frames}.")
+            # Stop conveyor + start Timer2
+            pico_send(ser, "STOP")
+            t_stop_start = time.time()
+            print(f"STOP -> t_stop_start={t_stop_start:.3f}")
 
-            results = model.predict(source=frame, imgsz=args.imgsz, conf=args.conf, verbose=False)
+            # IMPORTANT: your method assumes IR1 stays ON during stop
+            # We'll warn if it drops.
+            if not ir_triggered(PIN_IR1):
+                print("WARNING: IR1 went OFF immediately after stopping. Your length math may be wrong. "
+                      "Move IR1 slightly upstream so the object remains detected while stopped.")
 
-            annotated = frame.copy()
+            # ---------- MEASURE + YOLO WHILE STOPPED ----------
+            # Ultrasound (averaged)
+            top_cm  = read_ultrasound_averaged(US_TOP)
+            side_cm = read_ultrasound_averaged(US_SIDE)
+            print(f"Ultrasound: top={top_cm} cm, side={side_cm} cm")
 
-            # annotate + compute colour + detection stats
-            for r in results:
-                names = r.names
-                boxes = r.boxes
-                if boxes is None or boxes.xyxy is None:
-                    continue
+            # YOLO 600 frames
+            y = run_yolo_600(model, cap)
+            print(f"YOLO: {y}")
 
-                for (xyxy, cls, conf) in zip(boxes.xyxy, boxes.cls, boxes.conf):
-                    x1, y1, x2, y2 = map(int, xyxy.tolist())
-                    h, w = frame.shape[:2]
-                    x1, y1 = max(0, x1), max(0, y1)
-                    x2, y2 = min(w - 1, x2), min(h - 1, y2)
+            # Read script and decide direction
+            rule = parse_user_script(SCRIPT_FILE)
+            direction = decide_direction(rule)
+            print(f"Rule: {rule} => direction={direction}")
 
-                    ch = y2 - y1
-                    cw = x2 - x1
-                    if ch < 2 or cw < 2:
-                        continue
+            # Resume conveyor + stop Timer2
+            pico_send(ser, "RUN")
+            t_stop_end = time.time()
+            print(f"RUN -> t_stop_end={t_stop_end:.3f}")
 
-                    cy1 = y1 + int(0.2 * ch)
-                    cy2 = y2 - int(0.2 * ch)
-                    cx1 = x1 + int(0.2 * cw)
-                    cx2 = x2 - int(0.2 * cw)
-                    cy1, cy2 = max(0, cy1), max(cy1 + 1, cy2)
-                    cx1, cx2 = max(0, cx1), max(cx1 + 1, cx2)
+            # ---------- Timer1 ends when IR1 is OFF (stable) ----------
+            t_block_end = wait_ir_off_stable(PIN_IR1, IR_OFF_STABLE_S)
+            print(f"IR1 OFF stable -> t_block_end={t_block_end:.3f}")
 
-                    crop = frame[cy1:cy2, cx1:cx2]
-                    colour = colour_name_from_bgr(crop)
+            # Compute length with YOUR method
+            t_block = t_block_end - t_block_start
+            t_stop  = t_stop_end - t_stop_start
+            t_move  = t_block - t_stop
+            length_mm = max(0.0, t_move * BELT_SPEED_MM_S)
 
-                    cls_i = int(cls)
-                    cls_name = names.get(cls_i, str(cls_i)) if isinstance(names, dict) else names[cls_i]
+            print(f"t_block={t_block:.3f}s, t_stop={t_stop:.3f}s, t_move={t_move:.3f}s")
+            print(f"Estimated length = {length_mm:.1f} mm (speed={BELT_SPEED_MM_S} mm/s)")
 
-                    c = float(conf)
-                    conf_list.append(c)
-                    class_counts[cls_name] += 1
-                    colour_counts[colour] += 1
-                    class_conf_sum[cls_name] += c
-                    class_conf_count[cls_name] += 1
+            # ---------- SERVO TIMING USING IR2 ----------
+            # Wait for object to reach diverter zone, then swing
+            print("Waiting for IR2 (diverter cue)...")
+            # IR2 trigger
+            while not ir_triggered(PIN_IR2):
+                time.sleep(LOOP_DT)
 
-                    label = f"{cls_name} | {colour} | {c*100:.1f}%"
-                    draw_labelled_box(annotated, x1, y1, x2, y2, label)
+            print("IR2 triggered -> swinging servo")
+            if direction == "LEFT":
+                servo_set(servo_pwm, SERVO_LEFT)
+            else:
+                servo_set(servo_pwm, SERVO_RIGHT)
 
-            # light %
-            light_samples.append(light_percent_from_bgr(frame))
+            # Hold briefly then reset neutral
+            time.sleep(0.35)
+            servo_set(servo_pwm, SERVO_NEUTRAL)
 
-            # CPU
-            cpu_samples.append(psutil.cpu_percent(interval=None))
-            proc_cpu_samples.append(proc.cpu_percent(interval=None))
+            print("Cycle complete. Ready for next object.\n")
+            time.sleep(0.15)
 
-            # memory
-            vm = psutil.virtual_memory()
-            trial_used_mb = vm.used / (1024 * 1024)
-            ram_samples.append(trial_used_mb)
-
-            pm = proc.memory_info()
-            proc_ram_samples.append(pm.rss / (1024 * 1024))
-
-            # freq
-            try:
-                f = psutil.cpu_freq()
-                freq_samples.append(float(f.current) if f and f.current else 0.0)
-            except Exception:
-                freq_samples.append(0.0)
-
-            # temp
-            temp = safe_cpu_temp_c()
-            if temp is not None:
-                temp_samples.append(temp)
-
-            # rolling FPS overlay (optional)
-            if args.show_fps:
-                now = time.perf_counter()
-                dt = now - t_prev
-                if dt > 0:
-                    inst = 1.0 / dt
-                    rolling_fps = 0.9 * rolling_fps + 0.1 * inst if rolling_fps > 0 else inst
-                t_prev = now
-                cv2.putText(annotated, f"Rolling FPS: {rolling_fps:.1f}", (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2, cv2.LINE_AA)
-
-            # trial/frame overlay
-            cv2.putText(annotated, f"Trial {t}/{args.trials}  Frame {fidx}/{args.frames_per_trial}",
-                        (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2, cv2.LINE_AA)
-
-            cv2.imshow(win, annotated)
-            key = cv2.waitKey(1) & 0xFF
-            if key in (27, ord("q")):
-                cap.release()
-                cv2.destroyAllWindows()
-                print("\nStopped by user.\n")
-                return
-
-            frames_done += 1
-
-        t1 = time.perf_counter()
-        secs = max(1e-9, (t1 - t0))
-        fps = args.frames_per_trial / secs
-
-        avg_light = float(np.mean(light_samples)) if light_samples else 0.0
-        avg_cpu = float(np.mean(cpu_samples)) if cpu_samples else 0.0
-        avg_proc_cpu = float(np.mean(proc_cpu_samples)) if proc_cpu_samples else 0.0
-        avg_ram = float(np.mean(ram_samples)) if ram_samples else 0.0
-        avg_proc_ram = float(np.mean(proc_ram_samples)) if proc_ram_samples else 0.0
-        avg_freq = float(np.mean(freq_samples)) if freq_samples else 0.0
-        avg_temp = float(np.mean(temp_samples)) if temp_samples else None
-
-        mean_conf = float(np.mean(conf_list)) if conf_list else 0.0
-        total_dets = int(sum(class_counts.values()))
-
-        # save trial metrics
-        trial_fps.append(fps)
-        trial_light.append(avg_light)
-        trial_cpu.append(avg_cpu)
-        trial_proc_cpu.append(avg_proc_cpu)
-        trial_ram_mb.append(avg_ram)
-        trial_proc_ram_mb.append(avg_proc_ram)
-        trial_freq_mhz.append(avg_freq)
-        if avg_temp is not None:
-            trial_temp_c.append(avg_temp)
-        trial_mean_conf.append(mean_conf)
-        trial_total_dets.append(total_dets)
-
-        # update global aggregates
-        global_class_counts.update(class_counts)
-        global_colour_counts.update(colour_counts)
-        global_conf_list.extend(conf_list)
-
-        # prepare top-k strings
-        top_classes = top_k_counter(class_counts, args.topk)
-        top_colours = top_k_counter(colour_counts, args.topk)
-
-        def class_line():
-            if not top_classes:
-                return "None"
-            parts = []
-            for name, cnt in top_classes:
-                mconf = (class_conf_sum[name] / class_conf_count[name]) if class_conf_count[name] else 0.0
-                parts.append(f"{name}({cnt}, {mconf*100:.1f}%)")
-            return ", ".join(parts)
-
-        def colour_line():
-            if not top_colours:
-                return "None"
-            return ", ".join([f"{c}({n})" for c, n in top_colours])
-
-        print(
-            f"Trial {t:02d}/{args.trials} | "
-            f"FPS: {fps:7.2f} | "
-            f"Light: {avg_light:6.2f}% | "
-            f"MeanConf: {mean_conf*100:6.2f}% | "
-            f"Dets: {total_dets:4d} | "
-            f"CPU: {avg_cpu:6.2f}% | "
-            f"ProcCPU: {avg_proc_cpu:7.2f}% | "
-            f"RAM: {avg_ram:8.1f} MB | "
-            f"ProcRAM: {avg_proc_ram:7.1f} MB | "
-            f"Freq: {avg_freq:7.0f} MHz"
-            + (f" | Temp: {avg_temp:5.1f} C" if avg_temp is not None else "")
-        )
-        print(f"  Top classes: {class_line()}")
-        print(f"  Top colours: {colour_line()}")
-
-    cap.release()
-    cv2.destroyAllWindows()
-
-    # Summary
-    fps_m, fps_s = mean_std(trial_fps)
-    light_m, light_s = mean_std(trial_light)
-    cpu_m, cpu_s = mean_std(trial_cpu)
-    pcpu_m, pcpu_s = mean_std(trial_proc_cpu)
-    ram_m, ram_s = mean_std(trial_ram_mb)
-    pram_m, pram_s = mean_std(trial_proc_ram_mb)
-    freq_m, freq_s = mean_std(trial_freq_mhz)
-    conf_m, conf_s = mean_std(np.array(trial_mean_conf) * 100.0)
-    det_m, det_s = mean_std(trial_total_dets)
-
-    print("\n=== SUMMARY (mean ± std over trials) ===")
-    print(f"FPS:         {fps_m:.2f} ± {fps_s:.2f}")
-    print(f"Light %:     {light_m:.2f} ± {light_s:.2f}")
-    print(f"MeanConf %:  {conf_m:.2f} ± {conf_s:.2f}")
-    print(f"Dets/trial:  {det_m:.1f} ± {det_s:.1f}")
-    print(f"CPU %:       {cpu_m:.2f} ± {cpu_s:.2f}")
-    print(f"ProcCPU %:   {pcpu_m:.2f} ± {pcpu_s:.2f}")
-    print(f"RAM MB:      {ram_m:.1f} ± {ram_s:.1f}")
-    print(f"ProcRAM MB:  {pram_m:.1f} ± {pram_s:.1f}")
-    print(f"Freq MHz:    {freq_m:.0f} ± {freq_s:.0f}")
-    if trial_temp_c:
-        temp_m, temp_s = mean_std(trial_temp_c)
-        print(f"Temp C:      {temp_m:.1f} ± {temp_s:.1f}")
-
-    print("\nTop classes overall:")
-    for name, cnt in global_class_counts.most_common(args.topk):
-        print(f"  {name}: {cnt}")
-
-    print("\nTop colours overall:")
-    for name, cnt in global_colour_counts.most_common(args.topk):
-        print(f"  {name}: {cnt}")
-
-    if global_conf_list:
-        print(f"\nOverall mean confidence: {np.mean(global_conf_list)*100:.2f}%")
-
-    print("=======================================\n")
-
+    finally:
+        try:
+            pico_send(ser, "STOP")
+        except Exception:
+            pass
+        cap.release()
+        servo_pwm.stop()
+        GPIO.cleanup()
+        ser.close()
 
 if __name__ == "__main__":
     main()

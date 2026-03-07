@@ -1,196 +1,234 @@
-### Updated README (drop-in replacement)
+Below is a clean, professional README tailored for your AI Conveyor Belt Detection System project. It reflects your hardware, architecture, and current development stage (testing sensors → integration → YOLO sorting). You can paste it directly into README.md on GitHub.
 
-# YOLO Fruit Object + Color Detection (CBD)
+⸻
 
-### Final Year Project – Reconfigurable Conveyor Sorting System with AI-Based Object Classification (CBD)
+AI Conveyor Belt Sorting System
 
-This repository implements a **real-time fruit detection and color estimation system** using **Ultralytics YOLO**.
-It is the vision + benchmarking core of the **Reconfigurable Conveyor Sorting System with AI-Based Object Classification (CBD)**.
+An intelligent conveyor belt system that uses computer vision, sensors, and embedded control to detect, classify, measure, and sort objects automatically.
 
-Unlike generic datasets/models (e.g., COCO / Objects365), this project is designed to run with a **fruit-specific YOLO model** to eliminate “donut/vase/sink” style confusion and provide reliable classifications for conveyor sorting use-cases.
+This project integrates:
+	•	Raspberry Pi (vision processing + system logic)
+	•	Raspberry Pi Pico (real-time hardware control)
+	•	YOLO object detection
+	•	Infrared break-beam sensors
+	•	Ultrasonic sensors
+	•	Servo-based diverter
+	•	Relay-controlled conveyor motor
 
-The system is designed to run on:
+The system detects objects on a conveyor belt, measures their physical dimensions, analyzes them using AI, and then routes them to the correct destination.
 
-* **Laptop** (development + benchmarking)
-* **Raspberry Pi 5** (embedded deployment)
+⸻
 
-with an emphasis on **modularity, reproducibility, and experimental validity**.
+System Architecture
 
----
+Camera
+   │
+   ▼
+Raspberry Pi (AI + Logic)
+   │
+   │ USB Serial
+   ▼
+Raspberry Pi Pico (Real-time Control)
+   │
+   ├── Relay → Conveyor Belt
+   ├── Servo → Diverter Gate
+   ├── IR Break Beam Sensors
+   └── Ultrasonic Sensors
 
-## Objectives
+The Raspberry Pi handles AI and decision-making, while the Pico manages real-time hardware control.
 
-* Detect **fruits** in real time using a YOLO model trained specifically for fruit classes.
-* Estimate dominant color for the detected fruit using a lightweight, mask-aware color pipeline.
-* Run efficiently on low-power hardware (Raspberry Pi 5).
-* Provide a **frame-matched benchmarking framework** for fair laptop vs Pi comparisons.
-* Record **what was detected**, **confidence**, **color**, and **timings**, per trial and overall.
+⸻
 
----
+Hardware Components
 
-## System Architecture
+Processing
+	•	Raspberry Pi
+	•	Raspberry Pi Pico
 
-Single entry-point with modular packages:
+Sensors
+	•	2 × IR Break-Beam Sensors (object detection + timing)
+	•	2 × Ultrasonic Sensors (dimension measurement)
 
-```
-CBD/
-├── main.py                          # single entry point
-├── models/
-│   └── fruit_yolo.pt                # fruit-specific YOLO weights (auto-downloaded or user-provided)
-│
-├── app/
-│   ├── config/
-│   │   └── settings.py              # experiment + camera defaults
-│   ├── camera/
-│   │   └── camera.py                # camera handling & backends
-│   ├── vision/
-│   │   ├── yolo_runner.py           # YOLO wrapper + fruit allowlist filter
-│   │   ├── color_utils.py           # mask-aware color naming + white balance
-│   │   └── mask_utils.py            # background masking + fallback bbox
-│   ├── benchmark/
-│   │   └── frame_benchmark.py       # frame-matched benchmark engine
-│   └── utils/
-│       └── stats.py                 # running stats + detection aggregation
-│
-├── requirements.txt
-└── README.md
-```
+Actuators
+	•	SC90 Micro Servo (sorting gate)
+	•	Relay Module (conveyor motor control)
 
-Only **`main.py`** is executed directly.
+Vision
+	•	USB Camera
 
----
+Conveyor
+	•	24V Stainless Steel Conveyor Belt
+	•	Speed: ~50 mm/s
 
-## Per-Frame Processing Pipeline
+⸻
 
-Each frame is processed in three stages:
+GPIO Pin Configuration
 
-1. **Capture** frame from camera / stream
-2. **YOLO inference** (fruit-specific model)
-3. **Post-processing**
+Raspberry Pi
 
-   * choose a single primary detection per frame (largest bbox)
-   * background masking (belt removal) + fallback bbox when YOLO misses
-   * dominant color estimation (mask-aware)
-   * per-frame timing + per-trial aggregation
+Physical Pin	GPIO	Function
+Pin 2	5V	Power
+Pin 6	GND	Ground
+Pin 12	GPIO18	Servo signal
+Pin 13	GPIO17	Ultrasonic 1 TRIG
+Pin 15	GPIO22	Ultrasonic 1 ECHO
+Pin 16	GPIO23	Ultrasonic 2 TRIG
+Pin 18	GPIO24	Ultrasonic 2 ECHO
+Pin 22	GPIO25	IR Sensor 1
+Pin 29	GPIO5	IR Sensor 2
 
-Each stage is timed independently (capture / inference / post / end-to-end).
 
----
+⸻
 
-## Benchmarking Methodology
+Object Measurement Method
 
-### Frame-Matched, Fixed-Trial Design
+Object length is calculated using beam interruption timing:
 
-To ensure a fair comparison between laptop and Raspberry Pi:
+Timer1 = time IR1 beam is broken
+Timer2 = time conveyor is stopped
 
-* Fixed total frames per run (default: **600**)
-* Fixed number of trials: **12**
-* Frames split evenly: **12 × 50**
+Object Length = (Timer1 - Timer2) × Belt Speed
 
-Why frame-matched?
-Time-matched benchmarks allow faster devices to process more frames → biased averages.
-Frame-matched ensures both platforms process the **same number of observations**.
+Example:
 
----
+Beam broken duration: 8 seconds
+Conveyor stopped: 2 seconds
+Movement time: 6 seconds
 
-## Recorded Metrics (Per Trial & Overall)
+Length = 6 × 50 mm/s = 300 mm
 
-### Performance
 
-* capture time (ms)
-* inference time (ms)
-* post-processing time (ms)
-* end-to-end latency (ms)
-* derived FPS
+⸻
 
-### Environment
+Sorting Logic
 
-* brightness %
-* HSV V mean
-* grayscale luminance mean
+After analysis, the object is routed via a servo gate.
 
-### Detections
+User-defined rules determine routing.
 
-* detections per trial
-* mean confidence (proxy accuracy for live video)
-* top classes / colors / class-color pairs
-* mean confidence per class
+Example rule file:
 
----
+Object: apple
+Color: red
+Width: 50
+Length: 80
+Thickness: 20
+Min_conf: 0.4
+Path: C5
 
-## Installation
+The system interprets the path and directs the object accordingly.
 
-```bash
-# 1) Create venv
-python -m venv venv
+⸻
 
-# 2) Activate
-venv\Scripts\activate          # Windows
-# or
-source venv/bin/activate       # macOS/Linux
+AI Object Detection
 
-# 3) Install dependencies
-pip install --upgrade pip
-pip install -r requirements.txt
-```
+The system uses YOLO (Ultralytics) for object detection.
 
-Example `requirements.txt`:
+Each object is analyzed over 600 frames to obtain:
+	•	object classification
+	•	average confidence
+	•	color estimation
+	•	detection stability
 
-```txt
-ultralytics
-opencv-python
-numpy
-torch
-torchvision
-```
+Model used:
 
----
+YOLOv11 Nano
 
-## Running
 
-```bash
-python main.py --source 0
-```
+⸻
 
-Flow:
+Conveyor Control
 
-* READY screen appears
-* Press **R** to run benchmark (auto runs 600 frames, 12 trials)
-* Prints per-trial + overall summaries in terminal
-* Final frame freezes
-* Press **R** to rerun, **Q/ESC** to quit
+The Raspberry Pi communicates with the Pico via USB serial.
 
-### Optional Flags
+Commands:
 
-* `--source 0/1/2` camera index OR a file/URL path
-* `--backend auto|any|dshow|msmf|v4l2|avfoundation|gstreamer`
-* `--mjpg` (helps some USB cams / Pi setups)
-* `--no_draw` disables boxes + color naming (speed testing)
+RUN
+STOP
+PING
 
----
+Example response:
 
-## Fruit Model Notes (Important)
+OK RUN
+OK STOP
+PONG
 
-This project expects a **fruit-specific YOLO weights file** (e.g., `models/fruit_yolo.pt`).
 
-To protect the system from “COCO junk detections”, the pipeline includes an optional **fruit allowlist filter** inside:
+⸻
 
-* `app/vision/yolo_runner.py`
+Current Development Status
 
-So even if the model outputs extra labels, only allowed fruit classes are kept.
+Completed
+	•	Conveyor hardware integration
+	•	Pico relay motor control
+	•	IR break-beam detection
+	•	Servo diverter control
+	•	Raspberry Pi ↔ Pico serial communication
 
----
+In Progress
+	•	Ultrasonic dimension measurement
+	•	YOLO detection pipeline
+	•	User rule parsing
 
-## Applications
+Planned
+	•	Multi-conveyor routing
+	•	Dataset training
+	•	Performance optimization
 
-* conveyor fruit sorting
-* robotics perception + automation
-* embedded AI benchmarking and optimisation
-* industrial inspection pipelines
+⸻
 
----
+Installation
 
-## References
+Clone repository
 
-* Ultralytics YOLO Docs (official)
-* OpenCV Docs
+git clone https://github.com/yourusername/ai-conveyor-sorter.git
+cd ai-conveyor-sorter
+
+Install dependencies
+
+pip install ultralytics opencv-python numpy pyserial RPi.GPIO
+
+
+⸻
+
+Running the System
+
+Start the main control program:
+
+python conveyor_controller.py
+
+The system will:
+	1.	Start the conveyor
+	2.	Detect objects with IR1
+	3.	Stop the belt
+	4.	Measure dimensions
+	5.	Run YOLO analysis
+	6.	Resume belt
+	7.	Trigger servo at IR2
+
+⸻
+
+Safety Notes
+	•	Raspberry Pi GPIO pins are 3.3V only
+	•	Ultrasonic echo pins must use a voltage divider
+	•	Break-beam outputs require pull-up resistors
+	•	Avoid hot-swapping power lines
+
+⸻
+
+Future Improvements
+	•	multi-class dataset training
+	•	adaptive belt speed detection
+	•	automatic calibration
+	•	database logging
+	•	dashboard interface
+
+⸻
+
+License
+
+MIT License
+
+⸻
+
+If you want, I can also help you write a much stronger GitHub README that looks like a serious robotics / AI research project (with diagrams, badges, and visuals). It will make the repo look **far more impressive for portfolios or investors.
