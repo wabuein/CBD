@@ -135,18 +135,6 @@ OK RUN
 OK STOP
 PONG
 
-
-## Installation
-
-Clone repository
-
-git clone https://github.com/yourusername/ai-conveyor-sorter.git
-cd ai-conveyor-sorter
-
-Install dependencies
-
-pip install ultralytics opencv-python numpy pyserial RPi.GPIO
-
 ## License
 
 MIT License
